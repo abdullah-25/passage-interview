@@ -1,7 +1,8 @@
+from django.forms import ValidationError
 from django.utils import timezone
 from rest_framework.response import Response
 
-from consultantUser.models import Availability, Consultant, RecurringAvailability
+from consultantUser.models import Availability, Booking, Consultant, RecurringAvailability, User
 from consultantUser.serializers import AvailabilitySerializer, BookingSerializer,ConsultantSerializer, RecurringAvailabilitySerializer, UserSerializer
 from rest_framework.views import APIView, status
 
@@ -183,26 +184,64 @@ class ReserveConsultantTimeView(APIView):
 
     def post(self, request, pk):
         try:
-            consultant = Consultant.objects.get(id=pk)
+            required_fields = ['user', 'date', 'start_time', 'end_time']
+            if not all(field in request.data for field in required_fields):
+                return Response(
+                    {'error': f'Missing required fields. Required: {required_fields}'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            try:
+                consultant = Consultant.objects.get(id=pk)
+            except Consultant.DoesNotExist:
+                return Response(
+                    {'error': 'Consultant not found'}, 
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # Validate user exists
+            try:
+                user = User.objects.get(id=request.data.get('user'))
+            except User.DoesNotExist:
+                return Response(
+                    {'error': 'User not found'}, 
+                    status=status.HTTP_404_NOT_FOUND
+                )
+    
         
             with transaction.atomic():
+                # First check if this slot is already booked
+                existing_booking = Booking.objects.filter(
+                    availability__consultant_id=pk,
+                    availability__date=request.data.get('date'),
+                    availability__start_time=request.data.get('start_time'),
+                    availability__end_time=request.data.get('end_time')
+                ).first()
+
+                if existing_booking:
+                    return Response(
+                        {'error': 'This time slot is already booked'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
                 # Find available slot
-                available_slot = Availability.objects.select_for_update().get(
+                available_slot = Availability.objects.select_for_update().filter(
                     consultant_id=pk,
                     date=request.data.get('date'),
                     start_time=request.data.get('start_time'),
                     end_time=request.data.get('end_time'),
                     is_booked=False
-                )
+                ).first()  # Get only one slot if multiple exist
+
+                if not available_slot:
+                    return Response(
+                        {'error': 'No available time slot found for the specified criteria'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
                 
                 # Create booking using serializer
                 serializer = BookingSerializer(data={
                     'availability': available_slot.id,
-                    'user': request.data.get('user'),
-                    'consultant': pk,
-                    'date': request.data.get('date'),
-                    'start_time': request.data.get('start_time'),
-                    'end_time': request.data.get('end_time')
+                    'user': user.id
                 })
                 
                 if serializer.is_valid():
@@ -211,16 +250,23 @@ class ReserveConsultantTimeView(APIView):
                     available_slot.is_booked = True
                     available_slot.save()
                     
-                    return Response(
-                        {'message': 'Booking created successfully',
-                        'booking': serializer.data}, 
-                        status=status.HTTP_201_CREATED
-                    )
-                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                    return Response({
+                        'message': 'Booking created successfully',
+                        'booking_id': booking.id,
+                        'consultant': f"{consultant.first_name} {consultant.last_name}",
+                        'date': request.data.get('date'),
+                        'start_time': request.data.get('start_time'),
+                        'end_time': request.data.get('end_time')
+                    }, status=status.HTTP_201_CREATED)
+                    
+                return Response(
+                    serializer.errors, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
         
-        except Availability.DoesNotExist:
+        except ValidationError as e:
             return Response(
-                {'error': 'Time slot not available'}, 
+                {'error': f'Validation error: {str(e)}'}, 
                 status=status.HTTP_400_BAD_REQUEST
             )
         except Exception as e:
