@@ -23,7 +23,9 @@ from consultantUser.serializers import (
 
 
 class UserCreateView(APIView):
-    """Create a new user in the system."""
+    """
+    Create a new user in the system.
+    """
 
     def post(self, request):
         serializer = UserSerializer(data={
@@ -41,7 +43,9 @@ class UserCreateView(APIView):
 
 
 class ConsultantCreateView(APIView):
-    """Create a consultant."""
+    """
+    Create a consultant.
+    """
 
     def post(self, request):
         serializer = ConsultantSerializer(data={
